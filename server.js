@@ -1,38 +1,16 @@
-const express=require("express");
-const cors=require("cors");
-const crypto=require("crypto");
-const app=express();
-app.use(cors());
-app.use(express.json());
-
-const PORT=process.env.PORT||10000;
-const keys=new Map();
-const TTL=12*60*60*1000;
-
-function newKey(){
-  return "USER-"+crypto.randomBytes(4).toString("hex").toUpperCase();
-}
-
-app.get("/",(req,res)=>res.json({ok:true,service:"BIRUXY access API"}));
-
-app.post("/api/keys",(req,res)=>{
-  const key=newKey();
-  const expires=Date.now()+TTL;
-  keys.set(key,expires);
-  res.json({key,expiresAt:expires});
-});
-
-app.post("/api/keys/verify",(req,res)=>{
-  const key=String(req.body?.key||"").trim().toUpperCase();
-  const expires=keys.get(key);
-  if(!expires){
-    return res.status(401).json({valid:false,error:"Invalid username."});
-  }
-  if(Date.now()>expires){
-    keys.delete(key);
-    return res.status(401).json({valid:false,error:"Username expired."});
-  }
-  res.json({valid:true,expiresAt:expires});
-});
-
-app.listen(PORT,()=>console.log(`BIRUXY API listening on ${PORT}`));
+const express=require('express'),cors=require('cors'),multer=require('multer'),crypto=require('crypto'),fs=require('fs'),path=require('path');
+const app=express(),PORT=process.env.PORT||10000,ADMIN_USER=process.env.ADMIN_USER||'shadab',ADMIN_PASS=process.env.ADMIN_PASS||'biruxy*@786',TTL=12*60*60*1000;
+const DATA=path.join(__dirname,'data'),UPLOAD=path.join(__dirname,'uploads'),FILE=path.join(DATA,'movies.json');fs.mkdirSync(DATA,{recursive:true});fs.mkdirSync(UPLOAD,{recursive:true});if(!fs.existsSync(FILE))fs.writeFileSync(FILE,'[]');
+app.use(cors());app.use(express.json({limit:'2mb'}));app.use('/uploads',express.static(UPLOAD));
+const storage=multer.diskStorage({destination:(r,f,cb)=>cb(null,UPLOAD),filename:(r,f,cb)=>cb(null,Date.now()+'-'+crypto.randomBytes(5).toString('hex')+path.extname(f.originalname||''))});
+const upload=multer({storage,limits:{fileSize:1024*1024*1024}});const keys=new Map(),sessions=new Set();
+const read=()=>{try{return JSON.parse(fs.readFileSync(FILE,'utf8'))}catch{return[]}};const write=x=>fs.writeFileSync(FILE,JSON.stringify(x,null,2));
+function auth(req,res,next){const t=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'');if(!t||!sessions.has(t))return res.status(401).json({error:'Admin login required.'});next()}
+app.get('/',(r,s)=>s.json({ok:true,service:'BIRUXY Movie API'}));
+app.post('/api/keys',(r,s)=>{const key='USER-'+crypto.randomBytes(4).toString('hex').toUpperCase(),expiresAt=Date.now()+TTL;keys.set(key,expiresAt);s.json({key,expiresAt})});
+app.post('/api/keys/verify',(r,s)=>{const k=String(r.body?.key||'').trim().toUpperCase(),e=keys.get(k);if(!e)return s.status(401).json({valid:false,error:'Invalid username.'});if(Date.now()>e){keys.delete(k);return s.status(401).json({valid:false,error:'Username expired.'})}s.json({valid:true,expiresAt:e})});
+app.post('/api/admin/login',(r,s)=>{if(String(r.body?.username||'')!==ADMIN_USER||String(r.body?.password||'')!==ADMIN_PASS)return s.status(401).json({error:'Wrong admin username or password.'});const token=crypto.randomBytes(32).toString('hex');sessions.add(token);s.json({ok:true,token})});
+app.get('/api/movies',(r,s)=>s.json(read()));
+app.post('/api/movies',auth,upload.fields([{name:'poster',maxCount:1},{name:'video',maxCount:1}]),(r,s)=>{const title=String(r.body?.title||'').trim(),description=String(r.body?.description||'').trim(),category=String(r.body?.category||'movies')==='private'?'private':'movies',videoUrl=String(r.body?.videoUrl||'').trim();if(!title)return s.status(400).json({error:'Movie title is required.'});if(!videoUrl&&!r.files?.video?.[0])return s.status(400).json({error:'Upload a video or provide a video URL.'});const poster=r.files?.poster?.[0]?'/uploads/'+r.files.poster[0].filename:String(r.body?.posterUrl||'').trim();const video=r.files?.video?.[0]?'/uploads/'+r.files.video[0].filename:videoUrl;const item={id:crypto.randomUUID(),title,description,category,poster,video,createdAt:new Date().toISOString()};const a=read();a.unshift(item);write(a);s.json({ok:true,movie:item})});
+app.delete('/api/movies/:id',auth,(r,s)=>{const a=read(),m=a.find(x=>x.id===r.params.id);if(!m)return s.status(404).json({error:'Movie not found.'});for(const v of [m.poster,m.video])if(v?.startsWith('/uploads/')){try{fs.unlinkSync(path.join(__dirname,v.replace(/^\/+/,'')))}catch{}}write(a.filter(x=>x.id!==m.id));s.json({ok:true})});
+app.listen(PORT,()=>console.log('BIRUXY Movie API on '+PORT));
